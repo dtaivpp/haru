@@ -1,0 +1,53 @@
+# haru-terminal config. Copy to ~/haru-terminal/config/config.toml on the Pi.
+# The auth token is NOT here — it goes in config/secrets.env (chmod 600) as
+# HARU_TERMINAL_TOKEN, loaded by systemd's EnvironmentFile.
+
+[backend]
+url = "ws://haru-backend.local:8765/terminal"
+connect_timeout_s = 5
+
+[device]
+# Defaults to the hostname. Must be unique per terminal.
+id = "living-room"
+heartbeat_interval_s = 5
+
+[reconnect]
+initial_s = 1
+# Cap on the retry delay. Kept short: on a LAN, a backend restart should
+# not leave the Pi deaf for long.
+max_s = 10
+
+[audio.input]
+# Stream the mic to the backend continuously while connected. The Pi does no
+# VAD or wake word; the backend decides what's speech.
+enabled = true
+# ALSA device. The Jabra Speak2 40 UC shows up as card "UC"; it natively does
+# 16 kHz mono S16_LE, so plughw is a straight passthrough.
+device = "plughw:CARD=UC,DEV=0"
+sample_rate = 16000
+channels = 1
+frame_ms = 20
+# Max audio held while the network is slow before the oldest is dropped.
+queue_ms = 1000
+
+[audio.output]
+# Kept open permanently (playing silence when idle). Required for the Jabra
+# Speak2 40 UC: its mic returns I/O errors unless its playback stream is open.
+enabled = true
+device = "plughw:CARD=UC,DEV=0"
+# Advertised to the backend, which sends TTS audio in exactly this format.
+# 24 kHz is Kokoro's native rate. The Jabra plays 16/32/48 kHz, so plughw
+# resamples in ALSA (verified: the mic keeps working meanwhile).
+sample_rate = 24000
+channels = 1
+frame_ms = 20
+lead_ms = 60
+
+[display]
+# The avatar page shown full-screen by haru-display (cage + Chromium kiosk).
+# Defaults to http://<backend host>:8766/.
+# url = "http://haru-backend.local:8766/"
+model = "haru"        # avatar: haru (receptionist) | hiyori
+# zoom = 1.9          # 1 = whole body; higher frames the upper body (default: per model)
+# render_scale = 0.5   # avatar drawn at this fraction of screen pixels (default 0.5 on 4K)
+mouth_delay_ms = 140  # lip-sync offset for audio still in the speaker buffer

@@ -1,0 +1,20 @@
+[Unit]
+Description=Haru terminal (thin physical I/O link to the Haru backend)
+Wants=network-online.target
+After=network-online.target sound.target
+
+[Service]
+Type=simple
+User=@USER@
+Group=@USER@
+SupplementaryGroups=audio video gpio
+WorkingDirectory=@HOME@/haru-terminal
+EnvironmentFile=@HOME@/haru-terminal/config/secrets.env
+ExecStart=@HOME@/haru-terminal/.venv/bin/haru-terminal --config @HOME@/haru-terminal/config/config.toml
+Restart=always
+RestartSec=3
+# Unbuffered so log lines reach journald immediately.
+Environment=PYTHONUNBUFFERED=1
+
+[Install]
+WantedBy=multi-user.target

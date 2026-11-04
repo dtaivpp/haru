@@ -1,0 +1,20 @@
+[project]
+name = "haru-terminal"
+version = "0.1.0"
+description = "Haru thin physical I/O terminal (Raspberry Pi side)"
+requires-python = ">=3.11"
+license = "Apache-2.0"
+authors = [{ name = "David Tippett" }]
+dependencies = ["haru-protocol", "websockets>=15,<16"]
+
+[project.scripts]
+haru-terminal = "haru_terminal.main:main"
+haru-terminal-cli = "haru_terminal.cli:main"
+haru-display = "haru_terminal.display:main"
+
+[build-system]
+requires = ["setuptools>=77"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools]
+packages = ["haru_terminal"]

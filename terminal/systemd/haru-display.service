@@ -1,0 +1,19 @@
+[Unit]
+Description=Haru display (avatar page full-screen on the monitor: cage + Chromium kiosk)
+Wants=network-online.target seatd.service
+After=network-online.target seatd.service
+
+[Service]
+Type=simple
+User=@USER@
+Group=@USER@
+SupplementaryGroups=video render input
+RuntimeDirectory=haru-display
+Environment=XDG_RUNTIME_DIR=/run/haru-display
+EnvironmentFile=@HOME@/haru-terminal/config/secrets.env
+ExecStart=@HOME@/haru-terminal/.venv/bin/haru-display --config @HOME@/haru-terminal/config/config.toml
+Restart=always
+RestartSec=3
+
+[Install]
+WantedBy=multi-user.target

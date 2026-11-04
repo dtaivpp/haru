@@ -1,0 +1,103 @@
+# Haru backend (a Linux box with an NVIDIA GPU) — deployed to /opt/haru by scripts/deploy-backend.sh.
+# Services: gateway (terminal link, VAD, pipeline), stt (speech-to-text + TTS),
+# memory (long-term memory writer) and face (the avatar page). Each is
+# swappable behind a plain API.
+name: haru
+
+services:
+  gateway:
+    build:
+      context: .
+      dockerfile: services/gateway/Dockerfile
+    image: haru-gateway:latest
+    container_name: haru-gateway
+    restart: unless-stopped
+    env_file:
+      - config/gateway.env
+      - config/secrets.env
+      # Server-only debug toggles (e.g. turning the WAV recorder on); not deployed, not required.
+      - path: config/overrides.env
+        required: false
+    ports:
+      - "${HARU_GATEWAY_BIND:-0.0.0.0}:${HARU_GATEWAY_PORT:-8765}:8765"
+    volumes:
+      - ./data/recordings:/data/recordings
+      - ./data/conversations:/data/conversations
+      - ./data/state:/data/state
+      - ./config/persona.md:/config/persona.md:ro
+      # Haru's Google service account (calendar, read-only; sees only calendars shared with it).
+      - ./config/google-service-account.json:/config/google-service-account.json:ro
+    depends_on:
+      - stt
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "5"
+
+  # Speech-to-text: Speaches (faster-whisper) behind the OpenAI-compatible
+  # /v1/audio/transcriptions API (and /v1/audio/speech for TTS). Not
+  # published on the host; only the gateway reaches it, over the compose network.
+  stt:
+    image: ghcr.io/speaches-ai/speaches:latest-cuda
+    container_name: haru-stt
+    restart: unless-stopped
+    env_file:
+      - config/stt.env
+    volumes:
+      - ./data/models/hf:/home/ubuntu/.cache/huggingface/hub
+      # CUDA JIT cache. The 2025-09 image predates Blackwell (sm_120), so kernels
+      # are compiled from PTX on first use: ~84 s for Kokoro and ~25 s for Whisper.
+      # Persisting the cache means only the very first start pays that.
+      - ./data/cuda-cache:/home/ubuntu/.nv/ComputeCache
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  # Long-term memory writer: mines the chat log (data/conversations) into the
+  # Relevan `haru-memories` index. Same image as the gateway, separate process,
+  # so extraction can never slow a live conversation.
+  memory:
+    image: haru-gateway:latest
+    container_name: haru-memory
+    restart: unless-stopped
+    command: ["python", "-m", "haru_gateway.memory_writer"]
+    healthcheck:
+      disable: true   # the image's check polls the gateway's :8765, which this process doesn't serve
+    env_file:
+      - config/gateway.env
+      - config/secrets.env
+    volumes:
+      - ./data/conversations:/data/conversations:ro
+      - ./data/memory:/data/memory
+    depends_on:
+      - gateway
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  # The avatar page a terminal's screen shows (Stage 7). Static files only; the
+  # page itself connects to the gateway's /display for what to do.
+  face:
+    build: services/face
+    image: haru-face:latest
+    container_name: haru-face
+    restart: unless-stopped
+    ports:
+      - "${HARU_FACE_BIND:-0.0.0.0}:8766:80"
+    logging:
+      driver: json-file
+      options:
+        max-size: "5m"
+        max-file: "2"

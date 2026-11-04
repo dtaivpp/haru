@@ -1,0 +1,46 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Haru</title>
+  <style>
+    :root {
+      --bg-top: #eaf6fb;
+      --bg-bottom: #fdf2f7;
+      --ink: #3b4a57;
+    }
+    html, body {
+      margin: 0;
+      height: 100%;
+      overflow: hidden;
+      cursor: none;
+      background: linear-gradient(180deg, var(--bg-top), var(--bg-bottom));
+      font-family: system-ui, sans-serif;
+      color: var(--ink);
+    }
+    canvas { display: block; }
+    #status {
+      position: fixed;
+      inset: 0;
+      display: none;
+      align-items: flex-end;
+      justify-content: center;
+      padding-bottom: 6vh;
+      background: rgba(234, 246, 251, 0.55);
+      font-size: 2.2vh;
+      letter-spacing: 0.05em;
+    }
+    body.offline #status { display: flex; }
+  </style>
+</head>
+<body>
+  <canvas id="stage"></canvas>
+  <div id="status">connecting to Haru…</div>
+  <!-- Live2D Cubism Core (redistributable runtime), PixiJS 6, pixi-live2d-display (Cubism 4) -->
+  <script src="vendor/live2dcubismcore.min.js"></script>
+  <script src="vendor/pixi.min.js"></script>
+  <script src="vendor/cubism4.min.js"></script>
+  <script src="face.js"></script>
+</body>
+</html>
