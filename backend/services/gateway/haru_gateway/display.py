@@ -13,6 +13,7 @@ import logging
 import math
 import sys
 from collections import defaultdict
+from collections.abc import Awaitable, Callable
 
 from websockets.asyncio.server import ServerConnection
 from websockets.exceptions import ConnectionClosed
@@ -47,12 +48,16 @@ class DisplayHub:
     def __init__(self) -> None:
         self.displays: dict[str, set[ServerConnection]] = defaultdict(set)
         self.state: dict[str, dict] = defaultdict(lambda: {"state": "idle", "emotion": "neutral"})
+        # Called when a display connects, to send it anything it should show from the start (e.g. the badge).
+        self.on_attach: list[Callable[[str], Awaitable[None]]] = []
 
     async def attach(self, device_id: str, ws: ServerConnection) -> None:
         self.displays[device_id].add(ws)
         log.info("display for %s connected (%d attached)", device_id, len(self.displays[device_id]))
         try:
             await ws.send(encode(MessageType.AVATAR_STATE, dict(self.state[device_id])))
+            for cb in self.on_attach:
+                await cb(device_id)
             async for _ in ws:
                 pass  # displays don't talk back (yet)
         except ConnectionClosed:
@@ -91,6 +96,12 @@ class DisplayHub:
             return
         log.info("avatar %s: gesture %s", device_id, name)
         await self._send(device_id, MessageType.AVATAR_GESTURE, {"name": name})
+
+    async def badge(self, device_id: str, unread: int) -> None:
+        await self._send(device_id, MessageType.NOTIFY_BADGE, {"unread": unread})
+
+    async def panel(self, device_id: str, items: list[dict], open_: bool = True) -> None:
+        await self._send(device_id, MessageType.NOTIFY_PANEL, {"items": items, "open": open_})
 
     async def mouth(self, device_id: str, stream_id: int, values: list[float]) -> None:
         await self._send(device_id, MessageType.AVATAR_MOUTH,

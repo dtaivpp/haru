@@ -32,11 +32,118 @@
       letter-spacing: 0.05em;
     }
     body.offline #status { display: flex; }
+
+    /* Notifications: a bell with an unread count (never spoken), and the list Haru opens on request. */
+    :root {
+      --card: rgba(255, 255, 255, 0.82);
+      --card-edge: rgba(59, 74, 87, 0.08);
+      --accent: #e8618c;
+      --muted: #7a8794;
+    }
+    #bell {
+      position: fixed;
+      top: 4vh;
+      right: 4vh;
+      width: 9vh;
+      height: 9vh;
+      border-radius: 50%;
+      background: var(--card);
+      box-shadow: 0 0.6vh 2.4vh rgba(59, 74, 87, 0.14), inset 0 0 0 0.15vh var(--card-edge);
+      display: grid;
+      place-items: center;
+      opacity: 0;
+      transform: scale(0.4);
+      transition: opacity 260ms ease, transform 260ms cubic-bezier(0.34, 1.56, 0.64, 1);
+    }
+    #bell.show { opacity: 1; transform: scale(1); }
+    #bell.pop { animation: pop 520ms cubic-bezier(0.34, 1.56, 0.64, 1); }
+    #bell svg { width: 4.6vh; height: 4.6vh; color: var(--ink); }
+    #bell .count {
+      position: absolute;
+      top: -0.6vh;
+      right: -0.6vh;
+      min-width: 3.6vh;
+      height: 3.6vh;
+      padding: 0 1vh;
+      box-sizing: border-box;
+      border-radius: 1.8vh;
+      background: var(--accent);
+      color: #fff;
+      font-size: 2.1vh;
+      font-weight: 650;
+      font-variant-numeric: tabular-nums;
+      line-height: 3.6vh;
+      text-align: center;
+      box-shadow: 0 0 0 0.4vh var(--bg-top);
+    }
+    @keyframes pop {
+      0% { transform: scale(1); }
+      35% { transform: scale(1.22) rotate(-10deg); }
+      60% { transform: scale(0.96) rotate(6deg); }
+      100% { transform: scale(1) rotate(0); }
+    }
+    #panel {
+      position: fixed;
+      top: 15vh;
+      right: 4vh;
+      width: min(34vw, 62vh);
+      max-height: 76vh;
+      overflow: hidden;
+      padding: 2.4vh;
+      box-sizing: border-box;
+      border-radius: 2.4vh;
+      background: var(--card);
+      box-shadow: 0 1vh 4vh rgba(59, 74, 87, 0.16), inset 0 0 0 0.15vh var(--card-edge);
+      backdrop-filter: blur(1.2vh);
+      opacity: 0;
+      transform: translateX(3vh);
+      transition: opacity 300ms ease, transform 300ms ease;
+      pointer-events: none;
+    }
+    #panel.open { opacity: 1; transform: none; }
+    #panel h2 {
+      margin: 0 0 1.6vh;
+      font-size: 2.4vh;
+      font-weight: 650;
+      letter-spacing: 0.02em;
+    }
+    #panel ol { list-style: none; margin: 0; padding: 0; display: grid; gap: 1.2vh; }
+    #panel li {
+      padding: 1.4vh 1.6vh;
+      border-radius: 1.4vh;
+      background: rgba(255, 255, 255, 0.7);
+      box-shadow: inset 0 0 0 0.15vh var(--card-edge);
+    }
+    #panel li.new { box-shadow: inset 0.5vh 0 0 var(--accent), inset 0 0 0 0.15vh var(--card-edge); }
+    #panel .title { font-size: 2.2vh; font-weight: 600; line-height: 1.3; }
+    #panel .body {
+      margin-top: 0.5vh;
+      font-size: 1.8vh;
+      line-height: 1.4;
+      color: var(--ink);
+      display: -webkit-box;
+      -webkit-line-clamp: 3;
+      -webkit-box-orient: vertical;
+      overflow: hidden;
+    }
+    #panel .meta { margin-top: 0.6vh; font-size: 1.6vh; color: var(--muted); }
+    #panel .empty { font-size: 2vh; color: var(--muted); }
   </style>
 </head>
 <body>
   <canvas id="stage"></canvas>
   <div id="status">connecting to Haru…</div>
+  <div id="bell" aria-label="notifications">
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+      <path d="M6 8a6 6 0 0 1 12 0c0 7 3 9 3 9H3s3-2 3-9"/>
+      <path d="M10.3 21a1.94 1.94 0 0 0 3.4 0"/>
+    </svg>
+    <span class="count"></span>
+  </div>
+  <section id="panel" aria-live="polite">
+    <h2>Notifications</h2>
+    <ol></ol>
+  </section>
   <!-- Live2D Cubism Core (redistributable runtime), PixiJS 6, pixi-live2d-display (Cubism 4) -->
   <script src="vendor/live2dcubismcore.min.js"></script>
   <script src="vendor/pixi.min.js"></script>

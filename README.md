@@ -144,6 +144,21 @@ On a 4K monitor the page renders at half resolution (`renderScale`) and stretche
 `--force-device-scale-factor` under cage/Wayland: it inflates the viewport and only the top-left quarter
 shows. Chromium DevTools listens on 127.0.0.1:9222 on the Pi (loopback only).
 
+## Notifications
+
+Things that happen while you're not asking (a coding task finishing, say) never make Haru talk
+unprompted, so she stays quiet in meetings. Instead a bell pops in at the top right of the face page
+with an unread count. Ask her to open your notifications: the list opens on screen (for 45 s), she sums it
+up in a sentence or two, and the shown ones are marked read, which clears the badge. "Clear my notifications"
+deletes the read ones.
+
+`haru_gateway/tools/notifications.py` stores them in `data/state/notifications.json`: per terminal, or for every
+terminal, the newest 50, with read ones dropped after 7 days. Displays get `notify.badge` / `notify.panel`
+(see the protocol module). Anything in the gateway can post one with `NotificationService.add(title, body,
+source=..., device_id=...)`. Test without a source: `haru-terminal-cli --send debug.notify
+'{"text":"Build finished","body":"All checks passed."}'`, and drive the panel without Haru speaking with
+`--send debug.notifications '{"text":"open"}'` (or `"open all"`, `"clear"`). Both need `HARU_DEBUG_COMMANDS=1`.
+
 ## Tools
 
 Tools (`haru_gateway/tools/`) run inside the streaming reply. Calls run in parallel, results go back to

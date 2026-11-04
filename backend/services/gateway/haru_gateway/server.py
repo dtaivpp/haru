@@ -44,6 +44,7 @@ from haru_gateway.tools import ToolRegistry
 from haru_gateway.tools.alexandria import alexandria_tools
 from haru_gateway.tools.calendar import calendar_tools
 from haru_gateway.tools.mcp import MCPServer, github_server_config
+from haru_gateway.tools.notifications import NotificationService
 from haru_gateway.tools.timers import TimerService
 from haru_gateway.tools.weather import weather_tools
 from haru_gateway.tools.web import web_tools
@@ -113,7 +114,7 @@ class TerminalSession:
             log.info("status from %s: %s", self.device_id, msg.data)
         elif msg.type == MessageType.AUDIO_INPUT:
             self.audio.handle_control(msg.data)
-        elif msg.type in ("debug.ask", "debug.say", "debug.gesture"):
+        elif msg.type in ("debug.ask", "debug.say", "debug.gesture", "debug.notify", "debug.notifications"):
             await self.gateway.handle_debug(self.device_id, msg.type, msg.data)
         elif msg.type in TERMINAL_TO_BACKEND:
             # Known but not wired to anything yet (buttons, camera).
@@ -148,9 +149,14 @@ class Gateway:
         conv_config = conversation.ConversationConfig.from_env()
         self.timers = TimerService(Path(os.environ.get("HARU_TIMERS_FILE", "/data/state/timers.json")),
                                    conv_config.tz, self._announce)
+        self.notifications = NotificationService(
+            Path(os.environ.get("HARU_NOTIFICATIONS_FILE", "/data/state/notifications.json")), conv_config.tz)
+        self.notifications.on_badge(self._push_badge)
+        self.notifications.on_panel(self.displays.panel)
+        self.displays.on_attach.append(self._push_badge)
         self.tools = ToolRegistry()
         self.tools.add(*web_tools(), *weather_tools(), *self.timers.tools(), *calendar_tools(conv_config.tz),
-                       *alexandria_tools())
+                       *alexandria_tools(), *self.notifications.tools())
         log.info("tools: %s", ", ".join(self.tools.tools) or "none")
         # MCP servers register their tools once connected (see tools/mcp.py).
         self.mcp_servers = [MCPServer(c, self.tools) for c in (github_server_config(),) if c is not None]
@@ -204,6 +210,12 @@ class Gateway:
                     await d.set_state(device_id, "idle")
             self.tts.on_audio(on_audio)
             self.tts.on_playback_event(on_playback)
+
+    async def _push_badge(self, device_id: str | None) -> None:
+        """Send the unread count to that device's displays (device_id None: every connected display)."""
+        targets = [device_id] if device_id else [d for d, ws in self.displays.displays.items() if ws]
+        for dev in targets:
+            await self.displays.badge(dev, self.notifications.unread_count(dev))
 
     async def _announce(self, device_id: str, text: str) -> None:
         """Something Haru says unprompted (a timer or reminder going off)."""
@@ -308,6 +320,16 @@ class Gateway:
             self.tts.end(target)
         elif type_ == "debug.gesture":
             await self.displays.gesture(target, text)
+        elif type_ == "debug.notify":
+            # A test notification, as if a task had finished: {"device_id"?, "text": title, "body"?}
+            await self.notifications.add(text, str(data.get("body", "")), source="debug",
+                                         device_id=data.get("device_id"))
+        elif type_ == "debug.notifications":
+            # Drive the notification UI without Haru speaking: "open", "open all" or "clear".
+            if text.startswith("open"):
+                await self.notifications.open(target, include_read=text == "open all")
+            elif text == "clear":
+                await self.notifications.clear(target, [n.id for n in self.notifications.for_device(target)])
         elif type_ == "debug.ask" and self.conversations:
             # Exactly as if `target`'s mic had heard it.
             self.conversations.handle_transcript(stt.Transcript(f"{target}/debug", text, 0, 0.0, 0.0, 0.0))

@@ -132,6 +132,65 @@
     else face.model.internalModel.motionManager.expressionManager?.resetExpression()
   }
 
+  // --- notifications ---------------------------------------------------------------
+  // A bell with the unread count pops in when something arrives. Nothing is spoken:
+  // the list only opens when the user asks Haru for it (notify.panel).
+
+  const PANEL_OPEN_MS = 45000
+  let unread = 0
+  let panelTimer = null
+
+  function showBadge(n) {
+    const bell = document.getElementById('bell')
+    bell.querySelector('.count').textContent = n > 99 ? '99+' : String(n)
+    bell.classList.toggle('show', n > 0)
+    if (n > unread) {          // something new: a little wiggle
+      bell.classList.remove('pop')
+      void bell.offsetWidth    // restart the animation
+      bell.classList.add('pop')
+    }
+    unread = n
+  }
+
+  function hidePanel() {
+    clearTimeout(panelTimer)
+    document.getElementById('panel').classList.remove('open')
+  }
+
+  function showPanel(items) {
+    const panel = document.getElementById('panel')
+    const list = panel.querySelector('ol')
+    list.replaceChildren()
+    if (!items.length) {
+      const li = document.createElement('li')
+      li.className = 'empty'
+      li.textContent = 'Nothing new'
+      list.append(li)
+    }
+    for (const it of items) {
+      const li = document.createElement('li')
+      if (!it.read) li.className = 'new'
+      const title = document.createElement('div')
+      title.className = 'title'
+      title.textContent = it.title || ''
+      li.append(title)
+      if (it.body) {
+        const body = document.createElement('div')
+        body.className = 'body'
+        body.textContent = it.body
+        li.append(body)
+      }
+      const meta = document.createElement('div')
+      meta.className = 'meta'
+      meta.textContent = [it.source, it.when].filter(Boolean).join(' · ')
+      li.append(meta)
+      list.append(li)
+    }
+    panel.classList.add('open')
+    clearTimeout(panelTimer)
+    panelTimer = setTimeout(() => panel.classList.remove('open'), PANEL_OPEN_MS)
+  }
+
   // --- backend link -------------------------------------------------------------
 
   function connect(attempt = 0) {
@@ -170,6 +229,11 @@
       }
       else if (msg.type === 'avatar.gesture') {
         if ((MODEL.gestures || {})[d.name]) face.pendingGesture = { name: d.name, at: performance.now() }
+      }
+      else if (msg.type === 'notify.badge') showBadge(d.unread || 0)
+      else if (msg.type === 'notify.panel') {
+        if (d.open === false) hidePanel()
+        else showPanel(d.items || [])
       }
       else if (msg.type === 'avatar.mouth') {
         const track = face.mouthTracks.get(d.stream_id) || { fps: d.fps || 50, values: [] }

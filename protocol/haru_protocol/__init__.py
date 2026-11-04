@@ -33,6 +33,9 @@ TERMINAL_PATH = "/terminal"
 #   avatar.mouth {"stream_id": 3, "fps": 50, "values": [0..1, ...]}  appended per sentence,
 #                 played from the moment that stream starts speaking
 #   avatar.gesture {"name": "wave"}  a one-off body motion, played as she starts speaking
+#   notify.badge {"unread": 2}  unread notification count; the page shows a bell with it, hidden at 0
+#   notify.panel {"open": true, "items": [{"id", "title", "body"?, "source", "when", "read"}]}
+#                 open the notification list on screen (the user asked Haru for it); "open": false closes it
 DISPLAY_PATH = "/display"
 
 # Emotions the avatar understands (the same vocabulary as Project AIRI's ACT markers).
@@ -57,6 +60,8 @@ class MessageType(StrEnum):
     BACKEND_STATUS = "backend.status"
     AVATAR_MOUTH = "avatar.mouth"
     AVATAR_GESTURE = "avatar.gesture"
+    NOTIFY_BADGE = "notify.badge"
+    NOTIFY_PANEL = "notify.panel"
 
 
 TERMINAL_TO_BACKEND = frozenset({
