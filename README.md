@@ -187,6 +187,43 @@ malformed calls). Tool rounds are kept (trimmed) in history, so follow-ups work.
   The tools are **topic-gated**: only offered when the conversation mentions PRs, issues, CI or repos (~6k tokens
   of schema otherwise sent on every request), and sticky for 3 turns. Unscoped searches are pinned to
   `org:$HARU_GITHUB_ORG`, because otherwise they search all of GitHub and return strangers' PRs as yours.
+- `capy_*`: **Capy** coding agents; see the next section.
+
+## Capy coding agents
+
+[Capy](https://capy.ai) runs AI coding agents on your repositories; they push branches and open pull requests
+through Capy's GitHub App. Haru keeps an eye on them for you and can hand them work, by voice:
+
+- **"What's Capy working on?"** lists recent tasks and their status (`capy_tasks`).
+- **"What did the OAuth one say?"** reads a task's status and Capy's latest reply: what it did, the PR it
+  opened, or the question it's asking (`capy_task`).
+- **"Have Capy add a retry to the Relevan client."** Haru writes the request up as a brief for an engineer,
+  **reads it back, and only starts it once you say yes** (`capy_start_task`). A garbled transcript from an
+  always-on mic shouldn't be able to spend credits or touch code. New tasks are capped per day
+  (`HARU_CAPY_DAILY_TASKS`, 10).
+- **"Tell it yes, rotate the tokens."** answers a task that needs you, also read back first (`capy_reply`).
+  Messages are queued, so they don't interrupt work in progress.
+
+When a task finishes, fails, or starts needing you, Haru doesn't interrupt. She posts a
+[notification](#notifications): the bell lights up, and the notification carries Capy's last reply and the task's
+id, so "tell me more about that one" works after you open them. It covers **every thread in your Capy projects**,
+including ones you started yourself in Capy's app or Slack, not just the ones Haru started.
+
+How it works (`haru_gateway/tools/capy.py`):
+- Capy's API has no webhooks, so the gateway lists each project's threads every `HARU_CAPY_POLL_S` (60 s) and
+  compares with the last poll: `working → idle` is "finished", `→ failed` is "failed", and `needsYou` turning on is
+  "needs you" (with Capy's question). Plain "waiting" isn't announced; it often means waiting on CI or subagents.
+- The first poll only learns what exists. Thread state is saved in `data/state/capy.json`, so a restart
+  announces what changed while the gateway was down, and nothing twice.
+- Capy's latest reply is read from the newest page of the transcript (paging `before` the largest possible event
+  id; with no cursor Capy returns the oldest page) and flattened from Markdown to a short plain paragraph.
+- `HARU_CAPY_PROJECTS` limits which projects are watched (ids or codes; empty means all).
+
+Setup: in Capy, install its GitHub App on the repos you want it to work on, then create a **service-user** API key
+(Settings → API, role `read_write`) and add it to `/opt/haru/config/secrets.env` on the backend as
+`CAPY_SERVICE_API_KEY=capy_...`. Then recreate the gateway so it reads the file again:
+`docker compose up -d --force-recreate gateway`. Haru never writes to GitHub herself; Capy's agents do the work,
+and you review and merge their pull requests as usual.
 
 ## Memory
 

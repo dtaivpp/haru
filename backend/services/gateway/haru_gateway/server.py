@@ -43,6 +43,7 @@ from haru_gateway import audio, chatlog, conversation, display, llm, memory, rel
 from haru_gateway.tools import ToolRegistry
 from haru_gateway.tools.alexandria import alexandria_tools
 from haru_gateway.tools.calendar import calendar_tools
+from haru_gateway.tools.capy import CapyClient, CapyConfig, CapyService
 from haru_gateway.tools.mcp import MCPServer, github_server_config
 from haru_gateway.tools.notifications import NotificationService
 from haru_gateway.tools.timers import TimerService
@@ -157,6 +158,10 @@ class Gateway:
         self.tools = ToolRegistry()
         self.tools.add(*web_tools(), *weather_tools(), *self.timers.tools(), *calendar_tools(conv_config.tz),
                        *alexandria_tools(), *self.notifications.tools())
+        self.capy: CapyService | None = None
+        if (capy_cfg := CapyConfig.from_env()) is not None:
+            self.capy = CapyService(capy_cfg, CapyClient(capy_cfg), self.notifications, conv_config.tz)
+            self.tools.add(*self.capy.tools())
         log.info("tools: %s", ", ".join(self.tools.tools) or "none")
         # MCP servers register their tools once connected (see tools/mcp.py).
         self.mcp_servers = [MCPServer(c, self.tools) for c in (github_server_config(),) if c is not None]
@@ -346,6 +351,8 @@ class Gateway:
         background = []
         self.timers.start()
         background += [asyncio.create_task(s.run_forever()) for s in self.mcp_servers]
+        if self.capy is not None:
+            background.append(asyncio.create_task(self.capy.run_forever()))
         if self.config.llm is not None:
             background.append(asyncio.create_task(llm.watch(self.config.llm, self._on_llm_status)))
         if self.stt is not None:
@@ -364,6 +371,8 @@ class Gateway:
             if self.tts is not None:
                 await self.tts.close()
             self.timers.close()
+            if self.capy is not None:
+                await self.capy.client.close()
             if self.memory is not None:
                 await self.memory.close()
             if self.relevan is not None:

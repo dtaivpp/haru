@@ -112,6 +112,8 @@ class NotificationService:
              "when": _ago(dt.datetime.fromisoformat(n.created), self.now()), "read": n.read}
         if n.body:
             d["body"] = n.body
+        if n.ref:
+            d["ref"] = n.ref     # for follow-ups, e.g. {"capy_thread_id": ...} -> capy_task
         return d
 
     # --- changes ---------------------------------------------------------------------------
