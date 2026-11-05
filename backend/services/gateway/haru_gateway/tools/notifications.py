@@ -42,6 +42,7 @@ class Notification:
     created: str = ""              # ISO 8601 with offset
     read: bool = False
     ref: dict = field(default_factory=dict)   # source-specific handle, e.g. {"thread_id": ..., "url": ...}
+    key: str = ""                  # same key replaces the older one: "capy:<thread>" keeps only the latest update
 
 
 def _ago(then: dt.datetime, now: dt.datetime) -> str:
@@ -119,9 +120,13 @@ class NotificationService:
     # --- changes ---------------------------------------------------------------------------
 
     async def add(self, title: str, body: str = "", *, source: str = "haru", device_id: str | None = None,
-                  ref: dict | None = None) -> Notification:
+                  ref: dict | None = None, key: str = "") -> Notification:
+        """Post a notification. With a key, it replaces any earlier one with the same key, read or not,
+        so a task that updates five times leaves one entry (the newest, unread) instead of five."""
+        if key:
+            self.items = {i: old for i, old in self.items.items() if old.key != key}
         n = Notification(id=uuid.uuid4().hex[:8], title=title.strip(), body=body.strip(), source=source,
-                         device_id=device_id, created=self.now().isoformat(), ref=ref or {})
+                         device_id=device_id, created=self.now().isoformat(), ref=ref or {}, key=key)
         self.items[n.id] = n
         self._prune()
         self._save()

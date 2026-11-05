@@ -238,7 +238,7 @@ class CapyService:
             except CapyError as exc:
                 log.warning("capy: couldn't read the reply on %s: %s", t["id"], exc)
         await self.notifications.add(f"{heading}: {title}", body, source="capy",
-                                     ref={"capy_thread_id": t["id"]})
+                                     ref={"capy_thread_id": t["id"]}, key=f"capy:{t['id']}")
 
     async def run_forever(self) -> None:
         while True:

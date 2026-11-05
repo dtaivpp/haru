@@ -140,3 +140,21 @@ def test_tools_read_and_start_with_confirmation(capy):
 def test_disabled_without_key(monkeypatch):
     monkeypatch.delenv("CAPY_SERVICE_API_KEY", raising=False)
     assert CapyConfig.from_env() is None
+
+
+def test_repeat_updates_on_one_task_keep_only_the_latest(capy):
+    """A task babysitting CI goes working -> idle again and again; the inbox keeps one entry for it."""
+    async def body():
+        fake, svc, notes = capy
+        await svc.poll()
+        for reply in ("CI running.", "CI still running.", "CI completed, all green."):
+            fake.threads["jam_a"]["status"] = "working"
+            await svc.poll()
+            fake.messages["jam_a"] = [[{"id": "01Z", "source": "assistant", "text": reply}]]
+            fake.threads["jam_a"]["status"] = "idle"
+            assert await svc.poll() == 1
+            if reply == "CI running.":
+                await notes.open("desk")          # read the first one; a newer update still comes back unread
+        assert [(n.body, n.read) for n in notes.items.values()] == [("CI completed, all green.", False)]
+        assert notes.unread_count("desk") == 1
+    asyncio.run(body())
