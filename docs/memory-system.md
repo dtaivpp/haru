@@ -79,14 +79,23 @@ Each memory is one short, standalone sentence about the user, plus fields for ra
 3. **Fall back locally.** If the search is late or fails, recall ranks the session cache by word overlap
    with the turn plus a little weight for importance. A late search still completes into the cache, so
    later turns benefit from it.
-4. **Merge.** Search hits come first, then local matches fill up to 10 memories.
-5. **Inject.** The memories go into the system prompt under a short header:
-   *"What you remember from earlier conversations (may be out of date; use it only when it's relevant,
-   and don't recite it unprompted)"*, each with a `[noted YYYY-MM-DD]` date.
-6. **Record.** The chat log stores which memory ids were surfaced on each user turn, along with the
-   search's `queryId` and `sessionId`. The writer uses those later for feedback.
+4. **Build three tiers.** Each turn's prompt gets:
+   - **Core**: who the household is. Every memory of kind `person` or importance 5 (up to 8), people
+     first. These need no search, so Haru always knows she is talking to the user by name.
+   - **Recent**: `project`, `plan`, `event` and `finding` memories from the last 7 days, newest first
+     (up to 4). "What was Capy working on?" gets context with no shared keywords.
+   - **Relevant**: search hits that score at least 30% of the best hit, then local matches, up to 5.
+     A memory already in core or recent isn't repeated.
+5. **Inject.** Each tier goes into the system prompt under its own header. The core header also tells
+   Haru that the speaker is almost always the user, but that children or guests sometimes chime in.
+   Recent and relevant memories carry a `[noted YYYY-MM-DD]` date.
+6. **Record.** The chat log stores which memory ids were in the prompt on each user turn, plus the
+   search's `queryId`, `sessionId` and its hit ids in order (`hits`). The writer sends feedback only for
+   a memory that was a search hit, at its position in `hits`.
 
-The cache is dropped when the conversation resets (15 idle minutes).
+The session cache is dropped when the conversation resets (15 idle minutes). The store keeps the last
+full list, and a new session starts from it, so core memories are there on the first turn even before
+that session's preload ends.
 
 ## Write side: the memory writer
 
@@ -137,6 +146,10 @@ small talk, passing states ("I'm hungry"), one-off trivia, Haru's own suggestion
 garbled transcription, and speech that sounds like a TV or other people not talking to Haru. Without
 that list, the index fills with noise.
 
+**Don't make the search find who you are talking to.** A per-turn search only finds the user's name
+when the turn shares a word with it, and ten weak hits used to crowd it out. Who the household is
+belongs in every prompt; search is for everything else.
+
 **Let the writer update and retire, not just add.** Showing the model the related existing memories with
 their ids lets it update ("moved to Denver") and retire, instead of piling up contradictions. Retiring is a
 soft status change, so nothing is lost.
@@ -170,6 +183,8 @@ characters rather than trusting the output.
 - **The writer finds related memories by local word overlap**, not through the search index. Using search
   there too would catch paraphrases ("spouse" vs "wife").
 - **`use_count` and `last_used_at` are written but not yet used** in ranking.
+- **Core grows with the household.** Core is every `person` memory plus importance 5, capped at 8.
+  The writer prompt keeps importance 5 for the user's name, partner, children and pets.
 - **An "expected queries" field per memory** (the questions it should answer) is a deferred idea, to evaluate
   once the chat log has enough real questions to test against.
 - **Privacy:** every utterance is transcribed and logged, and the log is what the writer mines. Consider

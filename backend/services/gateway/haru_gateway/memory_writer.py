@@ -72,7 +72,14 @@ Do NOT remember:
 - passing states ("I'm hungry", "it's raining")
 - garbled speech-recognition fragments, or speech that sounds like TV, radio or other people
   not talking to Haru (the microphone is always on)
+- notifications Haru read out or the user cleared, and status checks (CI runs, open PRs, task
+  updates). They change by the hour. Remember the project behind them only if it's new.
 - things that are already in memory and unchanged
+
+Who is speaking: the microphone hears the whole household. Almost every turn is the user, but
+their children or guests sometimes chime in. Never record what a child or guest says as a fact
+about the user. If someone else clearly says something worth keeping about themselves, write it
+about them by name ("The user's daughter Emma is learning to swim.").
 
 Projects, interests and findings are time-sensitive: put the date in the sentence ("As of
 September 30, 2026, the user is evaluating..."). The current date is given below.
@@ -82,8 +89,13 @@ for example "The user's wife's birthday is June 3." Keep proper names exactly as
 "subject" is the topic or thing the memory is about, in a few searchable words: "wife birthday",
 "favorite snack", "dog Biscuit", "work schedule". It is never "user" or "the user"; every memory is
 about the user, so that word says nothing.
-If a new fact changes an existing memory, UPDATE it by id; if one is no longer true, RETIRE it.
-Importance: 5 = core identity or family (their name), 4 = important dates, plans and active projects,
+If a new fact changes or adds to an existing memory, UPDATE that memory by id with the complete,
+corrected sentence ("The user's children are Emma, Micah and Matthew."), never a second memory
+beside it. If one is no longer true, or is a finding the user has since dealt with, RETIRE it.
+If the user asks Haru to forget or remove something, RETIRE the matching memory.
+Importance: 5 = core identity: the user's name, and the names of their partner, children and pets
+(these are in every conversation, so keep them to who the household is),
+4 = important dates, plans and active projects,
 3 = preferences and current interests, 2 = findings and minor details, 1 = trivia. Extract everything
 useful; a typical session yields zero to four memories. Returning nothing is correct only when nothing
 in the new turns says anything about the user.
@@ -287,9 +299,12 @@ class MemoryWriter:
             for e in new:
                 ids = e.get("memories") or []
                 ctx = e.get("relevan") or {}
-                if mem_id in ids and ctx.get("queryId"):
+                # The position is the memory's place in the search results. A memory that was
+                # in the prompt but not a hit (a core or recent memory) gets no feedback.
+                hits = ctx.get("hits", ids)      # older log lines have no "hits": surfaced ids were hits first
+                if mem_id in ids and mem_id in hits and ctx.get("queryId"):
                     await self.relevan.feedback(action="llm_judgment", object_id=mem_id, query_id=ctx["queryId"],
-                                                session_id=ctx.get("sessionId"), position=ids.index(mem_id))
+                                                session_id=ctx.get("sessionId"), position=hits.index(mem_id))
             doc = by_id[mem_id]
             await self.relevan.update(mem_id, {**_content(doc), "use_count": int(doc.get("use_count") or 0) + 1,
                                                "last_used_at": now})

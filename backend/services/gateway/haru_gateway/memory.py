@@ -11,6 +11,15 @@ chat log). During a session nothing here ever blocks a reply:
   over the cache, and the search result still lands in the cache for later turns.
 - The cache lives for the session and is dropped when the conversation resets.
 
+Each turn's prompt gets three tiers of memories:
+
+- core: who the household is (the user's name, family). Always included, with
+  no search, so Haru never forgets who she is talking to.
+- recent: projects, plans, events and findings from the last few days, newest
+  first, so "what was Capy working on?" has context without the right keywords.
+- relevant: search hits for what was just said, minus weak hits far below the
+  best one.
+
 What was surfaced each turn (ids, and Relevan's queryId/sessionId) is returned
 so the chat log can record it; the writer later sends Relevan feedback on the
 memories that actually mattered.
@@ -19,6 +28,7 @@ memories that actually mattered.
 from __future__ import annotations
 
 import asyncio
+import datetime as dt
 import logging
 import re
 import time
@@ -34,16 +44,32 @@ _STOP = frozenset("a an the and or but if of to in on at for with is are was wer
                   "hey hi haru please tell about".split())
 
 
+MAX_CORE = 8
+CORE_KINDS = frozenset({"person"})          # family and other people in the user's life
+RECENT_DAYS = 7
+RECENT_KINDS = frozenset({"project", "plan", "event", "finding"})
+MAX_RECENT = 4
+MAX_RELEVANT = 5
+RELATIVE_CUTOFF = 0.3    # drop search hits that score under 30% of the best hit
+
+
 def _terms(text: str) -> set[str]:
     return {w for w in _WORD.findall(text.lower()) if w not in _STOP and len(w) > 1}
 
 
 @dataclass
 class Recall:
-    memories: list[dict]
+    core: list[dict] = field(default_factory=list)       # always in the prompt
+    recent: list[dict] = field(default_factory=list)     # the last few days
+    relevant: list[dict] = field(default_factory=list)   # search hits first, then local matches
     query_id: str | None = None
     relevan_session: str | None = None
     from_search: bool = False     # False: Relevan was too slow (or down); local match only
+    search_ids: list[str] = field(default_factory=list)  # the search's hits in its order, for feedback
+
+    @property
+    def memories(self) -> list[dict]:
+        return self.core + self.recent + self.relevant
 
     @property
     def ids(self) -> list[str]:
@@ -58,25 +84,54 @@ class _Session:
     started: float = field(default_factory=time.monotonic)
 
 
-def format_for_prompt(memories: list[dict]) -> str:
-    if not memories:
-        return ""
-    lines = []
-    for m in memories:
-        when = (m.get("updated_at") or m.get("created_at") or "")[:10]
-        person = m.get("person")
-        who = f" ({person})" if person and person != "household" else ""
-        lines.append(f"- {m.get('text', '').strip()}{who}" + (f" [noted {when}]" if when else ""))
-    return ("What you remember from earlier conversations (may be out of date; use it only when "
-            "it's relevant, and don't recite it unprompted):\n" + "\n".join(lines))
+def is_core(m: dict) -> bool:
+    return float(m.get("importance") or 0) >= 5 or m.get("kind") in CORE_KINDS
+
+
+def _when(m: dict) -> str:
+    return (m.get("updated_at") or m.get("created_at") or "")[:10]
+
+
+def _line(m: dict, dated: bool = True) -> str:
+    person = m.get("person")
+    who = f" ({person})" if person and person != "household" else ""
+    when = _when(m) if dated else ""
+    return f"- {m.get('text', '').strip()}{who}" + (f" [noted {when}]" if when else "")
+
+
+def format_for_prompt(recall: Recall) -> str:
+    parts = []
+    if recall.core:
+        parts.append(
+            "Who you live with (from your memory):\n" + "\n".join(_line(m, dated=False) for m in recall.core)
+            + "\nThe person talking to you is almost always the user described here. Other people in the "
+              "household, such as the user's children, sometimes chime in. Treat the speaker as the user "
+              "unless what they say shows it's someone else (they give another name, talk about the user as "
+              "someone else, or sound like a child talking). Then reply to that person, and don't call them by "
+              "the user's name. If you can't tell and it matters, ask.")
+    if recall.recent:
+        parts.append("Recent context from the last week, newest first (use it when the user picks up where "
+                     "they left off):\n" + "\n".join(_line(m) for m in recall.recent))
+    if recall.relevant:
+        parts.append("Other things you remember that may relate to what was just said (may be out of date; use "
+                     "them only when they're relevant, and don't recite them unprompted):\n"
+                     + "\n".join(_line(m) for m in recall.relevant))
+    return "\n\n".join(parts)
+
+
+def _when_full(m: dict) -> str:
+    return (m.get("updated_at") or m.get("created_at") or "")[:19]
 
 
 class MemoryStore:
-    def __init__(self, relevan: Relevan, *, budget_s: float = 0.25, max_in_prompt: int = 10) -> None:
+    def __init__(self, relevan: Relevan, *, budget_s: float = 0.25, max_relevant: int = MAX_RELEVANT) -> None:
         self.relevan = relevan
         self.budget_s = budget_s
-        self.max_in_prompt = max_in_prompt
+        self.max_relevant = max_relevant
         self.sessions: dict[str, _Session] = {}
+        # The last full list of memories. A new session starts from it, so the core
+        # memories are there on the first turn even before that session's preload ends.
+        self.known: dict[str, dict] = {}
         self._pending: set[asyncio.Task] = set()
 
     # --- session lifecycle ------------------------------------------------------
@@ -85,7 +140,7 @@ class MemoryStore:
         """Idempotent; call as early as possible (VAD speech start)."""
         s = self.sessions.get(device_id)
         if s is None:
-            s = self.sessions[device_id] = _Session()
+            s = self.sessions[device_id] = _Session(cache=dict(self.known))
         if s.loading is None:
             s.loading = self._spawn(self._load(device_id, s))
 
@@ -101,9 +156,12 @@ class MemoryStore:
         except RelevanError as exc:
             log.warning("could not preload memories for %s: %s", device_id, exc)
             return
-        for d in docs:
-            if d.get("status", "active") == "active":
-                s.cache.setdefault(d["id"], d)
+        active = {d["id"]: d for d in docs if d.get("status", "active") == "active"}
+        self.known = dict(active)
+        for doc_id in list(s.cache):
+            if doc_id not in active:
+                del s.cache[doc_id]       # retired or deleted since the last session
+        s.cache.update(active)
         log.info("preloaded %d memories for %s in %.0f ms", len(s.cache), device_id, (time.monotonic() - t0) * 1000)
 
     # --- per-turn recall -----------------------------------------------------------
@@ -124,14 +182,27 @@ class MemoryStore:
                 from_search = True
             else:
                 log.debug("memory search failed: %s", search.exception())
-        chosen: dict[str, dict] = {h["id"]: h for h in hits}
+        core = sorted((m for m in s.cache.values() if is_core(m)),     # people first: who's who matters most
+                      key=lambda m: (m.get("kind") in CORE_KINDS, float(m.get("importance") or 0)),
+                      reverse=True)[:MAX_CORE]
+        taken = {m["id"] for m in core}
+        recent = [m for m in self._recent(s) if m["id"] not in taken]
+        taken |= {m["id"] for m in recent}
+        relevant = [h for h in hits if h["id"] not in taken][: self.max_relevant]
+        taken |= {m["id"] for m in relevant}
         for m in self._local_match(s, text):
-            if len(chosen) >= self.max_in_prompt:
+            if len(relevant) >= self.max_relevant:
                 break
-            chosen.setdefault(m["id"], m)
-        memories = list(chosen.values())[: self.max_in_prompt]
-        return Recall(memories=memories, query_id=query_id, relevan_session=s.relevan_session,
-                      from_search=from_search)
+            if m["id"] not in taken:
+                relevant.append(m)
+                taken.add(m["id"])
+        return Recall(core=core, recent=recent, relevant=relevant, query_id=query_id,
+                      relevan_session=s.relevan_session, from_search=from_search, search_ids=[h["id"] for h in hits])
+
+    def _recent(self, s: _Session) -> list[dict]:
+        cutoff = (dt.datetime.now(dt.timezone.utc) - dt.timedelta(days=RECENT_DAYS)).isoformat()[:19]
+        fresh = [m for m in s.cache.values() if m.get("kind") in RECENT_KINDS and _when_full(m) >= cutoff]
+        return sorted(fresh, key=_when_full, reverse=True)[:MAX_RECENT]
 
     async def _search(self, s: _Session, text: str) -> tuple[list[dict], str | None]:
         # Content words only: a full spoken sentence ("I am feeling peckish, any snack
@@ -140,27 +211,33 @@ class MemoryStore:
         query = " ".join(sorted(_terms(text), key=text.lower().find))
         if not query:
             return [], None
-        data = await self.relevan.search(query, size=self.max_in_prompt, session_id=s.relevan_session,
+        data = await self.relevan.search(query, size=self.max_relevant + MAX_CORE, session_id=s.relevan_session,
                                          filters=[{"field": "status", "value": "active"}])
         ctx = data.get("searchContext") or {}
         s.relevan_session = ctx.get("sessionId") or s.relevan_session
+        results = data.get("results") or []
+        # Weak hits share one stray word with the turn ("open" in "open notifications"
+        # matching a coffee shop that is "open now"). Keep the hits near the best one.
+        top = max((float(r.get("score") or 0) for r in results), default=0.0)
         hits = []
-        for r in data.get("results") or []:
+        for r in results:
             doc = {"id": r["id"], **(r.get("document") or {})}
             s.cache[doc["id"]] = doc
-            hits.append(doc)
+            if float(r.get("score") or 0) >= top * RELATIVE_CUTOFF:
+                hits.append(doc)
         return hits, ctx.get("queryId")
 
     def _local_match(self, s: _Session, text: str) -> list[dict]:
-        """Cheap overlap ranking over the session cache, plus the most important memories."""
+        """Cheap overlap ranking over the session cache (the core memories are already in the prompt)."""
         q = _terms(text)
 
-        def score(m: dict) -> float:
-            hay = _terms(" ".join([m.get("text", ""), m.get("subject", ""), " ".join(m.get("tags") or [])]))
-            return len(q & hay) * 2 + float(m.get("importance") or 0) * 0.3
+        def overlap(m: dict) -> int:
+            return len(q & _terms(" ".join([m.get("text", ""), m.get("subject", ""), " ".join(m.get("tags") or [])])))
 
-        ranked = sorted(s.cache.values(), key=score, reverse=True)
-        return [m for m in ranked if score(m) >= 1.2]  # some overlap, or importance >= 4
+        def score(m: dict) -> float:
+            return overlap(m) * 2 + float(m.get("importance") or 0) * 0.1
+
+        return sorted((m for m in s.cache.values() if overlap(m) > 0), key=score, reverse=True)
 
     def _spawn(self, coro) -> asyncio.Task:
         task = asyncio.create_task(coro)

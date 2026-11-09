@@ -16,7 +16,7 @@ import pytest
 from haru_gateway.chatlog import ChatLog
 from haru_gateway.conversation import ConversationConfig, ConversationManager
 from haru_gateway.llm import LLMConfig
-from haru_gateway.memory import MemoryStore, format_for_prompt
+from haru_gateway.memory import MemoryStore, Recall, format_for_prompt
 from haru_gateway.memory_writer import MemoryWriter, WriterConfig
 from haru_gateway.relevan import Relevan, RelevanConfig
 from haru_gateway.stt import Transcript
@@ -28,6 +28,8 @@ COFFEE = {"id": "mem-coffee", "text": "The user drinks oat milk lattes.", "subje
           "kind": "preference", "tags": ["coffee"], "importance": 3, "status": "active", "use_count": 0}
 OLD = {"id": "mem-old", "text": "The user lives in Austin.", "subject": "home", "kind": "fact",
        "importance": 4, "status": "active", "use_count": 0}
+NAME = {"id": "mem-name", "text": "The user's name is Sam.", "subject": "name", "kind": "person",
+        "importance": 5, "status": "active", "use_count": 0}
 
 
 class FakeRelevan(BaseHTTPRequestHandler):
@@ -63,10 +65,12 @@ class FakeRelevan(BaseHTTPRequestHandler):
         if self.path.endswith("/search"):
             time.sleep(FakeRelevan.search_delay)
             q = set(body["query"].lower().replace("'", " ").split())
-            hits = [d for d in FakeRelevan.docs.values()
-                    if d.get("status") == "active" and q & set((d["text"] + " " + d["subject"]).lower().replace("'", " ").replace(".", "").split())]
+            def overlap(d):
+                return len(q & set((d["text"] + " " + d["subject"]).lower().replace("'", " ").replace(".", "").split()))
+            hits = sorted((d for d in FakeRelevan.docs.values() if d.get("status") == "active" and overlap(d)),
+                          key=overlap, reverse=True)
             FakeRelevan.calls.append(("search", body["query"], body.get("sessionId"), body.get("customerId")))
-            return self._reply({"results": [{"id": d["id"], "score": 1.0, "document": {k: v for k, v in d.items() if k != "id"},
+            return self._reply({"results": [{"id": d["id"], "score": float(overlap(d)), "document": {k: v for k, v in d.items() if k != "id"},
                                              "explanation": "", "matchedFields": [], "matchedTerms": []} for d in hits],
                                 "searchContext": {"queryId": f"q-{len(FakeRelevan.calls)}", "sessionId": "rs-1"}})
         if self.path.endswith("/_bulk"):
@@ -141,9 +145,65 @@ def test_slow_relevan_never_delays_the_reply(relevan_server):
 
 
 def test_format_for_prompt():
-    text = format_for_prompt([BIRTHDAY])
+    text = format_for_prompt(Recall(core=[NAME], relevant=[BIRTHDAY]))
     assert "wife's birthday is June 3" in text and "noted 2026-09-01" in text
-    assert format_for_prompt([]) == ""
+    assert text.index("name is Sam") < text.index("almost always the user") < text.index("June 3")
+    assert format_for_prompt(Recall()) == ""
+
+
+def test_core_memories_are_always_in_the_prompt(relevan_server):
+    FakeRelevan.docs["mem-name"] = dict(NAME)
+
+    async def body():
+        store = MemoryStore(Relevan(relevan_server), budget_s=0.5)
+        store.start_session("pi")
+        await wait_for(lambda: len(store.sessions["pi"].cache) == 4)
+        r = await store.recall("pi", "coffee order")          # nothing about the name or family
+        assert [m["id"] for m in r.core] == ["mem-name", "mem-bday"]
+        assert [m["id"] for m in r.relevant] == ["mem-coffee"] and r.search_ids == ["mem-coffee"]
+        # A new session has the core memories on its first turn, before its own preload ends.
+        store.end_session("pi")
+        FakeRelevan.search_delay = 1.0
+        store.budget_s = 0.0
+        r = await store.recall("pi", "hooray")
+        assert "mem-name" in r.ids
+        await store.close()
+
+    asyncio.run(body())
+
+
+def test_weak_search_hits_are_dropped(relevan_server):
+    FakeRelevan.docs["mem-coffee2"] = {**COFFEE, "id": "mem-coffee2", "text": "The user's favorite coffee shop is Kawa, open early.",
+                                       "subject": "favorite coffee shop"}
+
+    async def body():
+        store = MemoryStore(Relevan(relevan_server), budget_s=0.5)
+        r = await store.recall("pi", "favorite coffee shop open now")
+        # Four words match mem-coffee2 and one matches mem-coffee: 1 is under 30% of 4.
+        assert r.search_ids == ["mem-coffee2"]
+        await store.close()
+
+    asyncio.run(body())
+
+
+def test_recent_projects_are_in_the_prompt(relevan_server):
+    now = dt.datetime.now(dt.timezone.utc)
+    FakeRelevan.docs["mem-capy"] = {"id": "mem-capy", "text": "The user asked Capy to add search partitioning.",
+                                    "subject": "Capy partitioning task", "kind": "project", "importance": 3,
+                                    "status": "active", "updated_at": now.isoformat()}
+    FakeRelevan.docs["mem-stale"] = {"id": "mem-stale", "text": "CI failed on main.", "subject": "CI status",
+                                     "kind": "finding", "importance": 2, "status": "active",
+                                     "updated_at": (now - dt.timedelta(days=10)).isoformat()}
+
+    async def body():
+        store = MemoryStore(Relevan(relevan_server), budget_s=0.5)
+        store.start_session("pi")
+        await wait_for(lambda: len(store.sessions["pi"].cache) == 5)
+        r = await store.recall("pi", "what was it working on")
+        assert [m["id"] for m in r.recent] == ["mem-capy"]
+        await store.close()
+
+    asyncio.run(body())
 
 
 class PromptCapture(BaseHTTPRequestHandler):
@@ -225,14 +285,16 @@ def test_writer_extracts_updates_retires_and_gives_feedback(relevan_server, tmp_
                  "tags": ["Dog", "pet"], "importance": 4}, {"text": ""}],   # the empty one is dropped
         "update": [{"id": "mem-coffee", "text": "The user drinks oat milk flat whites now."}],
         "retire": [{"id": "mem-old", "reason": "moved to Denver"}, {"id": "mem-made-up"}],
-        "relevant": ["mem-bday", "mem-nonexistent"],
+        "relevant": ["mem-bday", "mem-nonexistent", "mem-name"],   # mem-name was shown, not a hit
     }
+    FakeRelevan.docs["mem-name"] = dict(NAME)
     llm_srv = ThreadingHTTPServer(("127.0.0.1", 0), FakeExtractor)
     threading.Thread(target=llm_srv.serve_forever, daemon=True).start()
     old = (dt.datetime.now(dt.timezone.utc) - dt.timedelta(minutes=5)).isoformat().replace("+00:00", "Z")
     _write_log(tmp_path, [
         {"ts": old, "session": "s1", "role": "user", "text": "My wife's birthday is coming up, and we moved to Denver.",
-         "memories": ["mem-bday", "mem-coffee"], "relevan": {"queryId": "q-9", "sessionId": "rs-1"}},
+         "memories": ["mem-name", "mem-bday", "mem-coffee"],
+         "relevan": {"queryId": "q-9", "sessionId": "rs-1", "hits": ["mem-coffee", "mem-bday"]}},
         {"ts": old, "session": "s1", "role": "assistant", "text": "June 3rd, right?"},
         {"ts": old, "session": "s1", "role": "user", "text": "Yes. Also our dog Biscuit says hi."},
     ])
@@ -252,8 +314,9 @@ def test_writer_extracts_updates_retires_and_gives_feedback(relevan_server, tmp_
         assert FakeRelevan.docs["mem-old"]["status"] == "retired"
         fb = [c[1] for c in FakeRelevan.calls if c[0] == "feedback"]
         assert fb == [{"actionName": "llm_judgment", "customerId": "household", "objectId": "mem-bday",
-                       "queryId": "q-9", "sessionId": "rs-1", "position": 0}]
+                       "queryId": "q-9", "sessionId": "rs-1", "position": 1}]    # its place in the hits, not in the prompt
         assert FakeRelevan.docs["mem-bday"]["use_count"] == 1 and FakeRelevan.docs["mem-bday"]["last_used_at"]
+        assert FakeRelevan.docs["mem-name"]["use_count"] == 1     # it helped, but it gets no search feedback
         # Checkpointed: nothing new, nothing reprocessed (even by a fresh writer).
         assert await w.run_once() == 0
         w2 = MemoryWriter(w.config, Relevan(relevan_server), w.llm)

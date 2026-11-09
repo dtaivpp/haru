@@ -33,7 +33,7 @@ import httpx
 
 from haru_gateway.chatlog import ChatLog
 from haru_gateway.llm import USER_AGENT, LLMConfig
-from haru_gateway.memory import MemoryStore, format_for_prompt
+from haru_gateway.memory import MemoryStore, Recall, format_for_prompt
 from haru_gateway.stt import Transcript
 from haru_gateway.tools import ToolCall, ToolContext, ToolRegistry
 
@@ -301,12 +301,12 @@ class ConversationManager:
                 self.memory.end_session(device_id)
             self.memory.start_session(device_id)
 
-    def _system_prompt(self, memories: list[dict]) -> str:
+    def _system_prompt(self, recall: Recall | None) -> str:
         now = dt.datetime.now(self.config.tz)
         parts = [self.config.persona, f"It is currently {now:%A %B %-d, %Y, %-I:%M %p} ({now:%Z})."
                  + (f" The user lives in {self.config.home}; \"near me\" and \"here\" mean there." if self.config.home else "")]
-        if memories:
-            parts.append(format_for_prompt(memories))
+        if recall and (remembered := format_for_prompt(recall)):
+            parts.append(remembered)
         return "\n\n".join(parts)
 
     async def _respond(self, conv: Conversation, turn: list[Transcript]) -> None:
@@ -314,9 +314,10 @@ class ConversationManager:
         t0 = time.monotonic()
         recall = await self.memory.recall(conv.device_id, user_text) if self.memory else None
         if recall and recall.memories:
-            log.info("%s: recalled %d memories (%s, %.0f ms)", conv.device_id, len(recall.memories),
+            log.info("%s: recalled %d core, %d recent, %d relevant memories (%s, %.0f ms)", conv.device_id,
+                     len(recall.core), len(recall.recent), len(recall.relevant),
                      "relevan" if recall.from_search else "cache", (time.monotonic() - t0) * 1000)
-        messages = ([{"role": "system", "content": self._system_prompt(recall.memories if recall else [])}]
+        messages = ([{"role": "system", "content": self._system_prompt(recall)}]
                     + conv.history + [{"role": "user", "content": user_text}])
         # Which gated tool groups this turn may use.
         for group, trigger in TOOL_GROUP_TRIGGERS.items():
@@ -412,7 +413,8 @@ class ConversationManager:
             return
         self.chatlog.append(conv.device_id, conv.session, "user", user_text,
                             memories=recall.ids if recall else None,
-                            relevan={"queryId": recall.query_id, "sessionId": recall.relevan_session}
+                            relevan={"queryId": recall.query_id, "sessionId": recall.relevan_session,
+                                     "hits": recall.search_ids}
                             if recall and recall.query_id else None)
         if reply:
             self.chatlog.append(conv.device_id, conv.session, "assistant", reply, emotion=conv.last_emotion)
